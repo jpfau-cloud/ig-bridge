@@ -35,7 +35,7 @@ def ig_login():
         "encryptedPassword": False
     }
 
-    r = requests.post(f"{IG_BASE}/session", headers=headers, json=payload)
+    r = requests.post(f"{IG_BASE}/session", headers=headers, json=payload, timeout=20)
     r.raise_for_status()
 
     return {
@@ -57,7 +57,6 @@ def home():
 
 @app.post("/webhook")
 def webhook():
-
     data = request.get_json(silent=True) or {}
 
     if data.get("secret") != WEBHOOK_SECRET:
@@ -74,14 +73,13 @@ def webhook():
             h["VERSION"] = "2"
             h["IG-ACCOUNT-ID"] = IG_ACCOUNT_ID
 
-            r = requests.get(f"{IG_BASE}/positions", headers=h)
+            r = requests.get(f"{IG_BASE}/positions", headers=h, timeout=20)
             r.raise_for_status()
 
             return jsonify(r.json()), 200
 
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
-
 
     # =========================
     # ENTRY
@@ -103,7 +101,7 @@ def webhook():
                 "currencyCode": "EUR"
             }
 
-            r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=order)
+            r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=order, timeout=20)
             print("ENTRY:", r.status_code, r.text, flush=True)
             r.raise_for_status()
 
@@ -111,7 +109,6 @@ def webhook():
 
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
-
 
     # =========================
     # EXIT
@@ -133,10 +130,11 @@ def webhook():
                 "size": float(data.get("qty", 1)),
                 "orderType": "MARKET",
                 "timeInForce": "FILL_OR_KILL",
-                "forceOpen": False
+                "forceOpen": False,
+                "guaranteedStop": False
             }
 
-            r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=close_order)
+            r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=close_order, timeout=20)
             print("EXIT:", r.status_code, r.text, flush=True)
             r.raise_for_status()
 
@@ -144,6 +142,5 @@ def webhook():
 
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
-
 
     return jsonify({"ok": True, "ignored": True}), 200
