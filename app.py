@@ -58,13 +58,13 @@ def ig_headers(version: str = "2", with_account: bool = False):
         "X-SECURITY-TOKEN": sec,
         "VERSION": version,
     }
-    if with_account:
+    if with_account and IG_ACCOUNT_ID:
         h["IG-ACCOUNT-ID"] = IG_ACCOUNT_ID
     return h
 
 
 def ig_get_positions():
-    """Return list of position objects from IG."""
+    """Return list of positions from IG (list of dicts)."""
     h = ig_headers(version="2", with_account=True)
     r = requests.get(f"{IG_BASE}/positions", headers=h, timeout=20)
     r.raise_for_status()
@@ -72,8 +72,8 @@ def ig_get_positions():
     return payload.get("positions", [])
 
 
-def pick_position_for_epic(epic: str):
-    """Pick the first open position for epic. Returns dict like IG 'positions' item or None."""
+def pick_first_position_for_epic(epic: str):
+    """Pick first open position matching epic. Returns IG position item or None."""
     positions = ig_get_positions()
     for p in positions:
         pos = p.get("position", {})
@@ -99,7 +99,6 @@ def webhook():
         return jsonify({"ok": False, "error": "bad secret"}), 401
 
     print("WEBHOOK RECEIVED:", data, flush=True)
-
     t = data.get("type")
 
     # =========================
@@ -119,7 +118,6 @@ def webhook():
     if t == "entry":
         try:
             h = ig_headers(version="2", with_account=True)
-
             qty = float(data.get("qty", 1))
 
             order = {
@@ -144,34 +142,35 @@ def webhook():
             return jsonify({"ok": False, "error": str(e)}), 500
 
     # =========================
-    # EXIT (Auto: per dealId oder per EPIC)
+    # EXIT (Close)
+    # - If dealId provided -> close that
+    # - Else -> close first open position for IG_EPIC_GER40
     # =========================
     if t == "exit":
         try:
             qty = float(data.get("qty", 1))
 
-            # 1) dealId direkt, wenn vorhanden
             deal_id = data.get("dealId")
-
-            # 2) sonst automatisch erste Position für IG_EPIC_GER40 nehmen
             if not deal_id:
-                picked = pick_position_for_epic(IG_EPIC_GER40)
+                picked = pick_first_position_for_epic(IG_EPIC_GER40)
                 if not picked:
                     return jsonify({"ok": False, "error": "no open position found for epic"}), 404
                 deal_id = picked.get("position", {}).get("dealId")
                 if not deal_id:
                     return jsonify({"ok": False, "error": "dealId missing in picked position"}), 500
 
-            # Close order (IG requires VERSION 1 here in vielen Setups)
-            h = ig_headers(version="1", with_account=False)
-
             close_order = {
                 "dealId": deal_id,
-                "direction": "SELL",  # schließt Longs; für Shorts erweitern wir später
+                "direction": "SELL",  # closes LONG. (Short support comes later)
                 "size": qty,
                 "orderType": "MARKET",
                 "timeInForce": "FILL_OR_KILL",
             }
+
+            # IG expects DELETE on /positions/otc.
+            # We use POST + X-HTTP-Method-Override to avoid some proxies blocking DELETE.
+            h = ig_headers(version="1", with_account=False)
+            h["X-HTTP-Method-Override"] = "DELETE"
 
             r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=close_order, timeout=20)
             print("IG EXIT:", r.status_code, r.text, flush=True)
@@ -183,5 +182,4 @@ def webhook():
             print("EXIT ERROR:", str(e), flush=True)
             return jsonify({"ok": False, "error": str(e)}), 500
 
-    # default
     return jsonify({"ok": True, "ignored": True}), 200
