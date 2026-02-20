@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # =========================
-# ENV VARS
+# ENV VARS (Render)
 # =========================
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
@@ -19,22 +19,21 @@ IG_BASE = "https://demo-api.ig.com/gateway/deal"  # Demo
 
 
 # =========================
-# IG LOGIN
+# IG HELPERS
 # =========================
-def ig_login():
+def ig_login_tokens():
+    """Login, return (CST, X-SECURITY-TOKEN)."""
     url = f"{IG_BASE}/session"
-
     headers = {
         "X-IG-API-KEY": IG_API_KEY,
         "Content-Type": "application/json; charset=UTF-8",
         "Accept": "application/json; charset=UTF-8",
         "VERSION": "2",
     }
-
     payload = {
         "identifier": IG_USERNAME,
         "password": IG_PASSWORD,
-        "encryptedPassword": False
+        "encryptedPassword": False,
     }
 
     r = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -42,53 +41,91 @@ def ig_login():
 
     cst = r.headers.get("CST")
     sec = r.headers.get("X-SECURITY-TOKEN")
-
     if not cst or not sec:
-        raise RuntimeError("IG login ok but tokens missing")
+        raise RuntimeError("IG login ok but tokens missing (CST / X-SECURITY-TOKEN)")
 
-    return {
+    return cst, sec
+
+
+def ig_headers(version: str = "2", with_account: bool = False):
+    """Build IG headers for authenticated requests."""
+    cst, sec = ig_login_tokens()
+    h = {
         "X-IG-API-KEY": IG_API_KEY,
         "Content-Type": "application/json; charset=UTF-8",
         "Accept": "application/json; charset=UTF-8",
         "CST": cst,
         "X-SECURITY-TOKEN": sec,
+        "VERSION": version,
     }
+    if with_account:
+        h["IG-ACCOUNT-ID"] = IG_ACCOUNT_ID
+    return h
+
+
+def ig_get_positions():
+    """Return list of position objects from IG."""
+    h = ig_headers(version="2", with_account=True)
+    r = requests.get(f"{IG_BASE}/positions", headers=h, timeout=20)
+    r.raise_for_status()
+    payload = r.json()
+    return payload.get("positions", [])
+
+
+def pick_position_for_epic(epic: str):
+    """Pick the first open position for epic. Returns dict like IG 'positions' item or None."""
+    positions = ig_get_positions()
+    for p in positions:
+        pos = p.get("position", {})
+        if pos.get("epic") == epic:
+            return p
+    return None
 
 
 # =========================
-# HOME
+# ROUTES
 # =========================
 @app.get("/")
 def home():
     return "OK", 200
 
 
-# =========================
-# WEBHOOK
-# =========================
 @app.post("/webhook")
 def webhook():
-
     data = request.get_json(silent=True) or {}
 
+    # Secret check
     if data.get("secret") != WEBHOOK_SECRET:
         return jsonify({"ok": False, "error": "bad secret"}), 401
 
     print("WEBHOOK RECEIVED:", data, flush=True)
 
+    t = data.get("type")
+
     # =========================
-    # ENTRY
+    # POSITIONS (Deal IDs holen)
     # =========================
-    if data.get("type") == "entry":
+    if t == "positions":
         try:
-            h = ig_login()
-            h["VERSION"] = "2"
-            h["IG-ACCOUNT-ID"] = IG_ACCOUNT_ID
+            positions = ig_get_positions()
+            return jsonify({"ok": True, "positions": positions}), 200
+        except Exception as e:
+            print("POSITIONS ERROR:", str(e), flush=True)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    # =========================
+    # ENTRY (BUY)
+    # =========================
+    if t == "entry":
+        try:
+            h = ig_headers(version="2", with_account=True)
+
+            qty = float(data.get("qty", 1))
 
             order = {
                 "epic": IG_EPIC_GER40,
                 "direction": "BUY",
-                "size": float(data.get("qty", 1)),
+                "size": qty,
                 "orderType": "MARKET",
                 "expiry": "-",
                 "forceOpen": True,
@@ -96,13 +133,7 @@ def webhook():
                 "currencyCode": "EUR",
             }
 
-            r = requests.post(
-                f"{IG_BASE}/positions/otc",
-                headers=h,
-                json=order,
-                timeout=20
-            )
-
+            r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=order, timeout=20)
             print("IG ENTRY:", r.status_code, r.text, flush=True)
             r.raise_for_status()
 
@@ -113,39 +144,44 @@ def webhook():
             return jsonify({"ok": False, "error": str(e)}), 500
 
     # =========================
-    # EXIT
+    # EXIT (Auto: per dealId oder per EPIC)
     # =========================
-    if data.get("type") == "exit":
+    if t == "exit":
         try:
-            h = ig_login()
-            h["VERSION"] = "1"
+            qty = float(data.get("qty", 1))
 
+            # 1) dealId direkt, wenn vorhanden
             deal_id = data.get("dealId")
+
+            # 2) sonst automatisch erste Position für IG_EPIC_GER40 nehmen
             if not deal_id:
-                return jsonify({"ok": False, "error": "dealId required"}), 400
+                picked = pick_position_for_epic(IG_EPIC_GER40)
+                if not picked:
+                    return jsonify({"ok": False, "error": "no open position found for epic"}), 404
+                deal_id = picked.get("position", {}).get("dealId")
+                if not deal_id:
+                    return jsonify({"ok": False, "error": "dealId missing in picked position"}), 500
+
+            # Close order (IG requires VERSION 1 here in vielen Setups)
+            h = ig_headers(version="1", with_account=False)
 
             close_order = {
                 "dealId": deal_id,
-                "direction": "SELL",
-                "size": float(data.get("qty", 1)),
+                "direction": "SELL",  # schließt Longs; für Shorts erweitern wir später
+                "size": qty,
                 "orderType": "MARKET",
-                "timeInForce": "FILL_OR_KILL"
+                "timeInForce": "FILL_OR_KILL",
             }
 
-            r = requests.post(
-                f"{IG_BASE}/positions/otc",
-                headers=h,
-                json=close_order,
-                timeout=20
-            )
-
+            r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=close_order, timeout=20)
             print("IG EXIT:", r.status_code, r.text, flush=True)
             r.raise_for_status()
 
-            return jsonify({"ok": True, "exit": r.json()}), 200
+            return jsonify({"ok": True, "exit": r.json(), "dealId": deal_id}), 200
 
         except Exception as e:
             print("EXIT ERROR:", str(e), flush=True)
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    # default
     return jsonify({"ok": True, "ignored": True}), 200
