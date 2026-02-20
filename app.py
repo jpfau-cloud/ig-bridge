@@ -53,8 +53,63 @@ def webhook():
     print("WEBHOOK RECEIVED:", data, flush=True)
 
     # 2) Only handle entry for now
-    if data.get("type") != "entry":
-        return jsonify({"ok": True, "ignored": True}), 200
+# ENTRY
+if data.get("type") == "entry":
+    try:
+        h = ig_login()
+        h["VERSION"] = "2"
+        h["IG-ACCOUNT-ID"] = IG_ACCOUNT_ID
+
+        order = {
+            "epic": IG_EPIC_GER40,
+            "direction": "BUY",
+            "size": float(data.get("qty", 1)),
+            "orderType": "MARKET",
+            "expiry": "-",
+            "forceOpen": True,
+            "guaranteedStop": False,
+            "currencyCode": "EUR",
+        }
+
+        r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=order, timeout=20)
+        print("IG ENTRY:", r.status_code, r.text, flush=True)
+        r.raise_for_status()
+        return jsonify({"ok": True, "entry": r.json()}), 200
+
+    except Exception as e:
+        print("ENTRY ERROR:", str(e), flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# EXIT
+if data.get("type") == "exit":
+    try:
+        h = ig_login()
+        h["VERSION"] = "1"
+
+        deal_id = data.get("dealId")
+        if not deal_id:
+            return jsonify({"ok": False, "error": "dealId required"}), 400
+
+        close_order = {
+            "dealId": deal_id,
+            "direction": "SELL",
+            "size": float(data.get("qty", 1)),
+            "orderType": "MARKET",
+            "timeInForce": "FILL_OR_KILL"
+        }
+
+        r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=close_order, timeout=20)
+        print("IG EXIT:", r.status_code, r.text, flush=True)
+        r.raise_for_status()
+        return jsonify({"ok": True, "exit": r.json()}), 200
+
+    except Exception as e:
+        print("EXIT ERROR:", str(e), flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+return jsonify({"ok": True, "ignored": True}), 200
 
     # 3) Place demo order (simple market BUY)
     try:
