@@ -124,6 +124,7 @@ def webhook():
             close_order = {
                 "dealId": deal_id,
                 "epic": IG_EPIC_GER40,
+                "expiry": "-",
                 "direction": "SELL",
                 "size": float(data.get("qty", 1)),
                 "orderType": "MARKET",
