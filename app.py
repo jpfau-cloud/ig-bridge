@@ -47,9 +47,6 @@ def ig_login():
     }
 
 
-# =========================
-# ROUTES
-# =========================
 @app.get("/")
 def home():
     return "OK", 200
@@ -75,11 +72,11 @@ def webhook():
 
             r = requests.get(f"{IG_BASE}/positions", headers=h, timeout=20)
             r.raise_for_status()
-
             return jsonify(r.json()), 200
 
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
+
 
     # =========================
     # ENTRY
@@ -110,6 +107,7 @@ def webhook():
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
+
     # =========================
     # EXIT
     # =========================
@@ -131,7 +129,8 @@ def webhook():
                 "orderType": "MARKET",
                 "timeInForce": "FILL_OR_KILL",
                 "forceOpen": False,
-                "guaranteedStop": False
+                "guaranteedStop": False,
+                "currencyCode": "EUR"
             }
 
             r = requests.post(f"{IG_BASE}/positions/otc", headers=h, json=close_order, timeout=20)
@@ -142,5 +141,6 @@ def webhook():
 
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
+
 
     return jsonify({"ok": True, "ignored": True}), 200
