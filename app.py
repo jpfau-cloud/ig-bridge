@@ -17,10 +17,8 @@ IG_PASSWORD    = os.environ.get("IG_PASSWORD", "")
 IG_ACCOUNT_ID  = os.environ.get("IG_ACCOUNT_ID", "")
 IG_EPIC_GER40  = os.environ.get("IG_EPIC_GER40", "")
 
-# Demo endpoint
 IG_BASE = os.environ.get("IG_BASE", "https://demo-api.ig.com/gateway/deal")
 
-# Persistent disk mount
 LOG_DIR = os.environ.get("LOG_DIR", "/var/data")
 LOG_PATH = os.path.join(LOG_DIR, "trades.jsonl")
 
@@ -33,7 +31,6 @@ def now_iso() -> str:
 
 
 def log_line(obj: dict):
-    """Append one JSON line to persistent log file."""
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         obj = {"ts": now_iso(), **obj}
@@ -51,7 +48,6 @@ def safe_json(resp):
 
 
 def resolve_epic(payload: dict) -> str:
-    """Map TradingView symbol names to IG epic."""
     epic = (payload.get("epic") or "").strip()
     if epic:
         return epic
@@ -70,7 +66,6 @@ def resolve_epic(payload: dict) -> str:
     ]:
         return IG_EPIC_GER40
 
-    # If a real IG epic is sent directly as symbol
     if sym.startswith("IX.") or sym.startswith("CS.") or sym.startswith("UA."):
         return sym
 
@@ -81,7 +76,6 @@ def resolve_epic(payload: dict) -> str:
 # IG login / session
 # ====================
 def ig_login() -> dict:
-    """Login and return session headers."""
     url = f"{IG_BASE}/session"
     headers = {
         "X-IG-API-KEY": IG_API_KEY,
@@ -116,7 +110,6 @@ def ig_login() -> dict:
 
 
 def ig_set_account(h: dict):
-    """Switch current account."""
     try:
         url = f"{IG_BASE}/session"
         payload = {
@@ -142,7 +135,6 @@ def ig_get_positions(h: dict) -> list:
 
 
 def ig_open_market(h: dict, epic: str, side: str, qty: float, currency: str = "EUR", expiry: str = "-") -> dict:
-    """Open a MARKET position."""
     url = f"{IG_BASE}/positions/otc"
     direction = "BUY" if side.lower() == "buy" else "SELL"
 
@@ -164,7 +156,6 @@ def ig_open_market(h: dict, epic: str, side: str, qty: float, currency: str = "E
 
 
 def ig_close_deal(h: dict, deal_id: str, direction: str, size: float, currency: str, expiry: str, epic: str) -> dict:
-    """Close one position by dealId."""
     url = f"{IG_BASE}/positions/otc"
 
     payload = {
@@ -180,15 +171,16 @@ def ig_close_deal(h: dict, deal_id: str, direction: str, size: float, currency: 
         "guaranteedStop": False,
     }
 
-    # IG close works with DELETE
-    r = requests.delete(url, headers={**h, "VERSION": "1"}, json=payload, timeout=20)
+    # WICHTIG: POST + Method Override statt requests.delete()
+    headers = {**h, "VERSION": "1", "X-HTTP-Method-Override": "DELETE"}
+
+    r = requests.post(url, headers=headers, json=payload, timeout=20)
     log_line({"kind": "ig_exit", "status": r.status_code, "payload": payload, "body": safe_json(r)})
     r.raise_for_status()
     return r.json()
 
 
 def ig_close_all_for_epic(h: dict, epic: str) -> dict:
-    """Close ALL open positions for a given epic."""
     positions = ig_get_positions(h)
     matches = []
 
@@ -206,7 +198,7 @@ def ig_close_all_for_epic(h: dict, epic: str) -> dict:
 
     for m, pos in matches:
         deal_id = pos.get("dealId")
-        open_dir = pos.get("direction")      # BUY / SELL
+        open_dir = pos.get("direction")
         size = pos.get("size", 0)
         currency = pos.get("currency", "EUR")
         expiry = m.get("expiry", "-")
@@ -265,7 +257,6 @@ def webhook():
 
     wtype = (data.get("type") or "").strip().lower()
 
-    # test ping
     if wtype in ["test", "test_from_tv"]:
         out = {"ok": True, "ignored": True}
         log_line({"kind": "webhook_out", "result": out})
@@ -293,9 +284,6 @@ def webhook():
         h = ig_login()
         ig_set_account(h)
 
-        # ====================
-        # ENTRY
-        # ====================
         if wtype == "entry":
             side = (data.get("side") or "buy").lower()
             qty = float(data.get("qty") or 1)
@@ -305,18 +293,12 @@ def webhook():
             log_line({"kind": "webhook_out", "result": out})
             return jsonify(out), 200
 
-        # ====================
-        # EXIT
-        # ====================
         if wtype == "exit":
             res = ig_close_all_for_epic(h, epic)
             out = {"ok": True, "exit": res}
             log_line({"kind": "webhook_out", "result": out})
             return jsonify(out), 200
 
-        # ====================
-        # POSITIONS
-        # ====================
         if wtype == "positions":
             res = ig_get_positions(h)
             out = {"ok": True, "positions": res}
