@@ -171,7 +171,6 @@ def ig_close_deal(h: dict, deal_id: str, direction: str, size: float, currency: 
         "guaranteedStop": False,
     }
 
-    # WICHTIG: POST + Method Override statt requests.delete()
     headers = {**h, "VERSION": "1", "X-HTTP-Method-Override": "DELETE"}
 
     r = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -180,7 +179,12 @@ def ig_close_deal(h: dict, deal_id: str, direction: str, size: float, currency: 
     return r.json()
 
 
-def ig_close_all_for_epic(h: dict, epic: str) -> dict:
+def ig_close_positions_for_epic_and_side(h: dict, epic: str, side_to_close: str) -> dict:
+    """
+    side_to_close:
+      'long'  -> close BUY positions only
+      'short' -> close SELL positions only
+    """
     positions = ig_get_positions(h)
     matches = []
 
@@ -188,17 +192,24 @@ def ig_close_all_for_epic(h: dict, epic: str) -> dict:
         m = p.get("market", {})
         pos = p.get("position", {})
 
-        if m.get("epic") == epic:
+        if m.get("epic") != epic:
+            continue
+
+        pos_dir = pos.get("direction", "").upper()
+
+        if side_to_close == "long" and pos_dir == "BUY":
+            matches.append((m, pos))
+        elif side_to_close == "short" and pos_dir == "SELL":
             matches.append((m, pos))
 
     if not matches:
-        raise RuntimeError("no open position found for epic")
+        raise RuntimeError(f"no open {side_to_close} position found for epic")
 
     closed = []
 
     for m, pos in matches:
         deal_id = pos.get("dealId")
-        open_dir = pos.get("direction")
+        open_dir = pos.get("direction", "").upper()
         size = pos.get("size", 0)
         currency = pos.get("currency", "EUR")
         expiry = m.get("expiry", "-")
@@ -284,17 +295,47 @@ def webhook():
         h = ig_login()
         ig_set_account(h)
 
+        # -------- LONG ENTRY --------
+        if wtype == "entry_long":
+            qty = float(data.get("qty") or 1)
+            res = ig_open_market(h, epic, "buy", qty)
+            out = {"ok": True, "entry_long": res}
+            log_line({"kind": "webhook_out", "result": out})
+            return jsonify(out), 200
+
+        # -------- SHORT ENTRY --------
+        if wtype == "entry_short":
+            qty = float(data.get("qty") or 1)
+            res = ig_open_market(h, epic, "sell", qty)
+            out = {"ok": True, "entry_short": res}
+            log_line({"kind": "webhook_out", "result": out})
+            return jsonify(out), 200
+
+        # -------- LONG EXIT --------
+        if wtype == "exit_long":
+            res = ig_close_positions_for_epic_and_side(h, epic, "long")
+            out = {"ok": True, "exit_long": res}
+            log_line({"kind": "webhook_out", "result": out})
+            return jsonify(out), 200
+
+        # -------- SHORT EXIT --------
+        if wtype == "exit_short":
+            res = ig_close_positions_for_epic_and_side(h, epic, "short")
+            out = {"ok": True, "exit_short": res}
+            log_line({"kind": "webhook_out", "result": out})
+            return jsonify(out), 200
+
+        # Optional backwards compatibility
         if wtype == "entry":
             side = (data.get("side") or "buy").lower()
             qty = float(data.get("qty") or 1)
-
             res = ig_open_market(h, epic, side, qty)
             out = {"ok": True, "entry": res}
             log_line({"kind": "webhook_out", "result": out})
             return jsonify(out), 200
 
         if wtype == "exit":
-            res = ig_close_all_for_epic(h, epic)
+            res = ig_close_positions_for_epic_and_side(h, epic, "long")
             out = {"ok": True, "exit": res}
             log_line({"kind": "webhook_out", "result": out})
             return jsonify(out), 200
